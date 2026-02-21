@@ -1,0 +1,2 @@
+# AutoScaler
+Diplom xd
