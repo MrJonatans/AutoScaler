@@ -1,0 +1,79 @@
+{{- if .Values.nodeExporter.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Values.nodeExporter.name }}
+  namespace: {{ include "autoscaler.namespace" . }}
+  labels:
+    {{- include "autoscaler.nodeExporter.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "autoscaler.nodeExporter.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "autoscaler.nodeExporter.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      hostNetwork: true
+      hostPID: true
+      containers:
+      - name: node-exporter
+        image: "{{ .Values.nodeExporter.image.repository }}:{{ .Values.nodeExporter.image.tag }}"
+        imagePullPolicy: {{ .Values.nodeExporter.image.pullPolicy }}
+        args:
+        - --path.procfs=/host/proc
+        - --path.sysfs=/host/sys
+        - --path.rootfs=/host/root
+        {{- if .Values.nodeExporter.collectors }}
+        {{- range $key, $val := .Values.nodeExporter.collectors }}
+        {{- if eq $val "true" }}
+        - --collector.{{ $key }}
+        {{- else }}
+        - --no-collector.{{ $key }}
+        {{- end }}
+        {{- end }}
+        {{- end }}
+        ports:
+        - containerPort: {{ .Values.nodeExporter.port }}
+          name: metrics
+          protocol: TCP
+        resources:
+          {{- toYaml .Values.nodeExporter.resources | nindent 10 }}
+        volumeMounts:
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        - name: root
+          mountPath: /host/root
+          readOnly: true
+      volumes:
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: root
+        hostPath:
+          path: /
+      {{- with .Values.nodeExporter.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeExporter.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeExporter.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

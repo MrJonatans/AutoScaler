@@ -4,6 +4,7 @@ data/*
 
 # Model files
 model.pth
+model.pth
 
 # Python
 __pycache__/
@@ -118,3 +119,5 @@ dmypy.json
 # OS
 .DS_Store
 Thumbs.db
+
+kubeconfigs/*

@@ -1,0 +1,47 @@
+{{- if .Values.predictor.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.predictor.name }}
+  namespace: {{ include "autoscaler.namespace" . }}
+  labels:
+    {{- include "autoscaler.predictor.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.predictor.replicas }}
+  selector:
+    matchLabels:
+      {{- include "autoscaler.predictor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "autoscaler.predictor.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: predictor
+        image: "{{ .Values.predictor.image.repository }}:{{ .Values.predictor.image.tag }}"
+        imagePullPolicy: {{ .Values.predictor.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.predictor.port }}
+        resources:
+          {{- toYaml .Values.predictor.resources | nindent 10 }}
+        {{- with .Values.predictor.env }}
+        env:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      {{- with .Values.predictor.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.predictor.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.predictor.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,61 @@
+{{- if .Values.prometheusAdapter.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.prometheusAdapter.name }}
+  namespace: {{ include "autoscaler.namespace" . }}
+  labels:
+    {{- include "autoscaler.prometheusAdapter.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.prometheusAdapter.replicas }}
+  selector:
+    matchLabels:
+      {{- include "autoscaler.prometheusAdapter.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "autoscaler.prometheusAdapter.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.prometheusAdapter.name }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: prometheus-adapter
+        image: "{{ .Values.prometheusAdapter.image.repository }}:{{ .Values.prometheusAdapter.image.tag }}"
+        imagePullPolicy: {{ .Values.prometheusAdapter.image.pullPolicy }}
+        args:
+        - --config=/etc/adapter/config.yaml
+        - --prometheus-url=http://{{ .Values.prometheus.name }}-service:{{ .Values.prometheus.port }}/
+        - --metrics-relist-interval=30s
+        - --cert-dir=/tmp
+        - --v=4
+        ports:
+        - containerPort: {{ .Values.prometheusAdapter.port }}
+        resources:
+          {{- toYaml .Values.prometheusAdapter.resources | nindent 10 }}
+        volumeMounts:
+        - name: config
+          mountPath: /etc/adapter
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: config
+        configMap:
+          name: {{ .Values.prometheusAdapter.name }}-config
+      - name: tmp
+        emptyDir: {}
+      {{- with .Values.prometheusAdapter.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.prometheusAdapter.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.prometheusAdapter.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

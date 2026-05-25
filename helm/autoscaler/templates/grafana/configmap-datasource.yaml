@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.grafana.name }}-datasource
+  namespace: {{ include "autoscaler.namespace" . }}
+  labels:
+    {{- include "autoscaler.grafana.labels" . | nindent 4 }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://{{ .Values.prometheus.name }}-service:{{ .Values.prometheus.port }}
+        isDefault: true
+        editable: false

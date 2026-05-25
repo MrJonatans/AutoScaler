@@ -2,9 +2,6 @@
 data.csv
 data/*
 
-# Model files
-model.pth
-
 # Python
 __pycache__/
 *.py[cod]

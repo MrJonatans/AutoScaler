@@ -1,0 +1,296 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.grafana.name }}-dashboard
+  namespace: {{ include "autoscaler.namespace" . }}
+  labels:
+    {{- include "autoscaler.grafana.labels" . | nindent 4 }}
+data:
+  autoscaler-dashboard.json: |
+    {
+      "__inputs": [],
+      "__requires": [],
+      "title": "AutoScaler Dashboard",
+      "description": "Real-time monitoring of AutoScaler: CPU prediction, scaling, and performance metrics",
+      "tags": ["autoscaler", "ml", "kubernetes"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "15s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "timepicker": {
+        "refresh_intervals": ["5s", "15s", "30s", "1m", "5m", "15m", "30m", "1h"],
+        "time_options": ["5m", "15m", "1h", "6h", "24h", "2d", "7d", "30d"]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "CPU Usage vs Predicted",
+          "type": "timeseries",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+          "options": {
+            "legend": {
+              "showLegend": true,
+              "placement": "bottom",
+              "calcs": ["last", "mean", "max"]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 70 },
+                  { "color": "red", "value": 90 }
+                ]
+              },
+              "custom": {
+                "lineInterpolation": "smooth",
+                "fillOpacity": 20,
+                "lineWidth": 2,
+                "spanNulls": true,
+                "pointSize": 3,
+                "showPoints": "never"
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "avg_over_time(cpu_usage_percent[1m])",
+              "legendFormat": "Avg Actual CPU",
+              "refId": "A"
+            },
+            {
+              "expr": "avg(predicted_cpu)",
+              "legendFormat": "Avg Predicted CPU (+15min)",
+              "refId": "B"
+            }
+          ]
+        },
+
+        {
+          "id": 2,
+          "title": "Request Rate (RPS)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+          "options": {
+            "legend": {
+              "showLegend": true,
+              "placement": "bottom",
+              "calcs": ["last", "mean", "max"]
+            },
+            "tooltip": { "mode": "multi" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "lineInterpolation": "smooth",
+                "fillOpacity": 30,
+                "lineWidth": 2,
+                "spanNulls": true
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(requests_total[1m])",
+              "legendFormat": "Requests/s",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Kubernetes Replicas",
+          "type": "stat",
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 3 },
+                  { "color": "red", "value": 7 }
+                ]
+              },
+              "custom": {
+                "lineInterpolation": "smooth",
+                "fillOpacity": 30,
+                "lineWidth": 2
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas{deployment=~\"autoscaler-app.*\"}",
+              "legendFormat": "Replicas",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "CPU Usage Distribution (Last 15min)",
+          "type": "bargauge",
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+          "options": {
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "showThresholdLabels": false,
+            "showThresholdMarkers": false,
+            "minVizHeight": 10,
+            "minVizWidth": 10,
+            "reduceOptions": {
+              "calcs": ["mean"],
+              "fields": "",
+              "values": false
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 30 },
+                  { "color": "red", "value": 70 }
+                ]
+              },
+              "custom": {
+                "lineInterpolation": "smooth",
+                "fillOpacity": 30,
+                "lineWidth": 2
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "avg_over_time(cpu_usage_percent[1m])",
+              "legendFormat": "Avg CPU (1m)",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 6,
+
+          "title": "Resource Overview",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+          "collapsed": false
+        },
+        {
+          "id": 7,
+          "title": "System Health",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 12, "y": 27 },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "min": 0,
+              "max": 100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 70 },
+                  { "color": "red", "value": 90 }
+                ]
+              },
+              "custom": {
+                "lineInterpolation": "smooth",
+                "fillOpacity": 30,
+                "lineWidth": 2
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "avg_over_time(cpu_usage_percent[1m]) by (instance)",
+              "legendFormat": "CPU Load",
+              "refId": "A"
+            },
+            {
+              "expr": "avg(predicted_cpu) by (instance)",
+              "legendFormat": "Predicted Load",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "title": "Scaling Events (Replica Changes)",
+          "type": "timeseries",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 27 },
+          "options": {
+            "legend": {
+              "showLegend": true,
+              "placement": "bottom",
+              "calcs": ["last", "max"]
+            },
+            "tooltip": { "mode": "multi" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "min": 0,
+              "custom": {
+                "lineInterpolation": "smooth",
+                "fillOpacity": 30,
+                "lineWidth": 2,
+                "spanNulls": true
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "changes(kube_deployment_status_replicas{deployment=~\"autoscaler-app.*\"}[5m])",
+              "legendFormat": "Replica Changes / 5min",
+              "refId": "A"
+            }
+          ]
+        }
+      ]
+    }

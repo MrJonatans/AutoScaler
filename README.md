@@ -1,247 +1,285 @@
 # AutoScaler
 
-## Введение
+ML-based predictive autoscaling system for Kubernetes.  
+Использует LSTM нейросеть для прогноза CPU и упреждающего масштабирования через HPA.
 
-AutoScaler - это система автоматического масштабирования (autoscaling) с прогнозированием нагрузки на сервер на основе машинного обучения. Система использует LSTM нейронную сеть для предсказания будущей нагрузки CPU и автоматически масштабирует приложение в Kubernetes с помощью Horizontal Pod Autoscaler (HPA).
+## Архитектура
 
-Проект включает:
-- Симулятор нагрузки на FastAPI
-- ML модель для предсказания нагрузки
-- Сервис предсказателя, интегрированный с Prometheus
-- Kubernetes манифесты для развертывания
-- Тесты (unit и integration)
+```
+┌──────────────┐    /metrics     ┌──────────────┐
+│  FastAPI App │ ───────────────▶│  Prometheus   │
+│  (в k8s)     │                 │  (в k8s)      │
+│  порт 8000   │◀────────────────│  порт 9090    │
+└──────────────┘  scrape 15s     └──────┬───────┘
+                                        │
+                              ┌─────────▼────────┐
+                              │  Predictor        │
+                              │  (на хосте)       │
+                              │  порт 8001        │
+                              │  ┌──────────────┐ │
+                              │  │ LSTM модель   │ │
+                              │  └──────────────┘ │
+                              └─────────┬────────┘
+                                        │ predicted_cpu
+                              ┌─────────▼────────┐
+                              │ Prometheus-Adapter│
+                              │ ext.metrics.k8s.io│
+                              └─────────┬────────┘
+                                        │
+                              ┌─────────▼────────┐
+                              │  HPA              │
+                              │  (predicted_cpu)  │
+                              └──────────────────┘
+```
+
+**Гибридный режим (рекомендуемый):**
+- Приложение и инфраструктура (Prometheus, Grafana, HPA) — в Kubernetes
+- Predictor (ML inference) запускается локально на хосте — так не нужно тащить torch в кластер
+- Prometheus scrapet внешний predictor как `external-predictor` target
+- Predictor забирает исторические метрики из Prometheus, прогоняет через LSTM, выставляет `predicted_cpu`
 
 ## Структура проекта
 
 ```
 AutoScaler/
 ├── src/
-│   ├── app/           # Основное приложение
-│   │   ├── main.py    # Точка входа приложения (FastAPI)
-│   │   └── metrics.py # Метрики и мониторинг (Prometheus)
-│   ├── ml/            # Машинное обучение
-│   │   ├── model.py   # Определение модели нейронной сети (LSTM)
-│   │   ├── predict.py # Функции предсказания
-│   │   ├── train.py   # Обучение модели
-│   │   └── utils.py   # Вспомогательные функции
-│   └── scaler/        # Логика масштабирования
-│       ├── config.py  # Конфигурация
-│       ├── predictor.py # Предсказатель нагрузки
-│       └── test_predictor.py # Тесты предсказателя
-├── deployment/        # Kubernetes манифесты
-│   ├── prometheus/    # Prometheus конфигурация
-│   ├── *.yaml         # Deployment, Service, HPA и т.д.
-├── tests/
-│   ├── unit/          # Unit тесты
-│   │   └── test_model.py # Тесты ML модели
-│   └── integration/   # Интеграционные тесты
-│       └── load_test.py # Нагрузочное тестирование (Locust)
+│   ├── app/                   # FastAPI-приложение (симулятор нагрузки)
+│   │   ├── main.py            # Точка входа FastAPI, endpoint /load, /metrics, /health
+│   │   └── metrics.py         # Prometheus-метрики (cpu_usage_percent, requests_total)
+│   ├── ml/                    # Машинное обучение
+│   │   ├── model.py           # LSTM (input=5 признаков, hidden=64, layers=2, output=1)
+│   │   ├── train.py           # Обучение: создание последовательностей, train/test split
+│   │   ├── predict.py         # Однократный прогноз (legacy)
+│   │   └── utils.py           # create_sequences, create_time_features, preprocessing
+│   └── scaler/                # Сервис предсказателя
+│       ├── config.py          # Настройки через env: PROMETHEUS_URL, SEQUENCE_LENGTH и т.д.
+│       ├── predictor.py       # PredictorService — сбор метрик, прогноз, экспорт метрики
+│       └── test_predictor.py  # Unit-тесты предсказателя
+├── helm/
+│   └── autoscaler/            # Helm chart для развёртывания
+│       ├── Chart.yaml         # v0.1.0, appVersion 1.0.0
+│       ├── values.yaml        # Все настройки: образы, ресурсы, HPA, адаптеры
+│       └── templates/
+│           ├── _helpers.tpl       # Общие шаблоны (labels, namespace)
+│           ├── namespace.yaml     # autoscaling-ns
+│           ├── app-deployment.yaml
+│           ├── app-service.yaml   # NodePort :30080
+│           ├── predictor-deployment.yaml  # (отключён по умолчанию, enabled: false)
+│           ├── hpa.yaml           # predicted_cpu + cpu_usage_percent (external metrics)
+│           ├── prometheus/
+│           │   ├── configmap.yaml
+│           │   ├── deployment.yaml
+│           │   └── service.yaml   # NodePort :30909
+│           ├── prometheus-adapter/
+│           │   ├── configmap.yaml # external rules: predicted_cpu, cpu_usage_percent
+│           │   ├── deployment.yaml
+│           │   ├── rbac.yaml
+│           │   ├── service.yaml
+│           │   └── serviceaccount.yaml
+│           ├── kube-state-metrics/
+│           │   ├── clusterrole.yaml
+│           │   ├── clusterrolebinding.yaml
+│           │   ├── deployment.yaml
+│           │   ├── service.yaml
+│           │   └── serviceaccount.yaml
+│           ├── node-exporter/
+│           │   ├── daemonset.yaml
+│           │   └── service.yaml
+│           └── grafana/
+│               ├── configmap-datasource.yaml        # Prometheus datasource provisioning
+│               ├── configmap-dashboard.yaml         # AutoScaler dashboard JSON
+│               ├── configmap-dashboards-provider.yaml
+│               ├── deployment.yaml
+│               └── service.yaml                     # NodePort :30300
 ├── scripts/
-│   ├── deploy.sh      # Скрипт развертывания
-│   └── generate_data.py # Генерация тестовых данных
-├── requirements.txt   # Зависимости Python
-├── Dockerfile         # Docker образ
-├── .gitignore         # Игнорируемые файлы
-├── LICENSE            # Лицензия
-└── README.md          # Этот файл
+│   ├── deploy.sh              # Полный цикл: сборка образов → transfer → helm upgrade
+│   ├── generate_data.py       # Генерация синтетических данных (14 дней, 1 мин)
+│   ├── prepare_azure_data.py  # Конвертация Azure trace → data.csv (30 дней, 1 мин)
+│   ├── collect_live_data.py   # Сбор real-time CPU из Prometheus в CSV
+│   └── visualize_data.py      # Визуализация data.csv
+├── tests/
+│   ├── unit/
+│   │   ├── test_model.py      # Тесты LSTM, create_sequences, preprocessing
+│   │   └── test_predictor.py  # (через src/scaler/test_predictor.py)
+│   └── integration/
+│       ├── load_test.py       # Нагрузочный тест с ramp-up / burst (асинхронный)
+│       └── load_test_csv.py   # CSV-driven нагрузка — воспроизводит data.csv в real-time
+├── requirements.txt           # Все зависимости (включая torch)
+├── requirements-app.txt       # Лёгкие зависимости для app (без torch)
+├── requirements-predictor.txt # Зависимости для predictor (с torch)
+├── Dockerfile                 # Multi-stage образ для app (без torch)
+├── Dockerfile.predictor       # Multi-stage образ для predictor (с torch)
+├── model.pth                  # Обученная LSTM модель
+├── scaler.pkl                 # MinMaxScaler (5 признаков: CPU + 4 time features)
+├── model_scaled.pth           # Переобученная модель (на data_scaled.csv)
+├── scaler_scaled.pkl          # Scaler для data_scaled
+├── data.csv                   # Обучающий датасет (30 дней CPU, 1 мин)
+├── data_scaled.csv            # Масштабированный датасет (нормализованный)
+├── live_data.csv              # Собранные в реальном времени метрики
+├── data-visual.csv            # Визуализационный датасет
+├── azure_trace.csv            # Сырой Azure trace (VM cpu_usage, assigned_mem)
+├── Chart.yaml                 # Корневой Chart.yaml (deprecated)
+├── model_evaluation.png       # График оценки модели (после обучения)
+├── model_evaluation_full_15min.png  # Оценка модели на 15-мин горизонте
+├── data_visualization.png     # Визуализация данных
+└── .gitignore
 ```
+
+## Компоненты
+
+### FastAPI App (`src/app/main.py`)
+- `GET /load?n=1000` — симуляция CPU-нагрузки (факториал 500, sub-linear scaling)
+- `GET /metrics` — Prometheus endpoint с `cpu_usage_percent` и `requests_total`
+- `GET /health` — healthcheck
+- CPU измеряется process-level через `psutil` в фоновом потоке
+
+### ML Model (`src/ml/model.py`)
+- **Архитектура**: LSTM (input=5 → hidden=64 → 2 слоя → Linear → 1)
+- **Признаки на входе**:
+  1. CPU usage (нормализованный)
+  2. `hour_sin` — циклический час дня
+  3. `hour_cos` — циклический час дня
+  4. `day_sin` — циклический день недели
+  5. `day_cos` — циклический день недели
+- **Sequence length**: 60 минут (по умолчанию)
+- **Prediction horizon**: 1 минута вперёд (настраивается)
+- **Loss**: MSELoss, **Optimizer**: Adam (lr=0.001), **Epochs**: 30
+
+### Predictor Service (`src/scaler/predictor.py`)
+- Циклически (каждые INTERVAL=60с) опрашивает Prometheus (`avg_over_time(cpu_usage_percent[1m])`)
+- Формирует 5-признаковый input и прогоняет через LSTM
+- Экспортирует метрику `predicted_cpu` на порту 8001
+- Сравнивает прогноз с порогами (scale_up/scale_down)
+
+### HPA (`helm/autoscaler/templates/hpa.yaml`)
+- Использует **external** метрики (через prometheus-adapter)
+- Основная метрика: `predicted_cpu > 30` (целевое значение)
+- Дополнительная метрика (включается `useCurrentCpu=true`): `cpu_usage_percent > 40%`
+
+### Prometheus Adapter
+- Проксирует `predicted_cpu` и `cpu_usage_percent` из Prometheus в `external.metrics.k8s.io`
+- External rules: `avg(predicted_cpu)`, `avg(cpu_usage_percent)`
+
+### Grafana Dashboard
+- **CPU Usage vs Predicted** (timeseries) — сравнение `cpu_usage_percent` и `predicted_cpu`, пороги 70%/90%
+- **Request Rate (RPS)** (timeseries) — `rate(requests_total[1m])`
+- **Kubernetes Replicas** (stat) — `kube_deployment_status_replicas`
+- **CPU Usage Distribution** (bargauge) — средний CPU за 1 мин
+- **System Health** (stat) — CPU Load vs Predicted Load
+- **Scaling Events** (timeseries) — `changes(kube_deployment_status_replicas[5m])`
 
 ## Требования
 
-- Python 3.8+
+- Python 3.11+
 - Docker
-- Kubernetes (k3s для локального развертывания)
-- kubectl
-- pip
+- k3s (или любой Kubernetes)
+- kubectl, Helm 3.x
 
-## Установка
+## Установка и запуск
 
 ```bash
-# Клонировать репозиторий
+# Клонировать
 git clone https://github.com/MrJonatans/AutoScaler.git
 cd AutoScaler
 
-# Установить зависимости
+# Установить все зависимости (для разработки)
 pip install -r requirements.txt
+
+# Или раздельно:
+pip install -r requirements-app.txt   # для app
+pip install -r requirements-predictor.txt  # для predictor
 ```
 
-## Обучение ML
-
-Для обучения модели на исторических данных:
+## Обучение модели
 
 ```bash
-# Сгенерировать тестовые данные (опционально)
+# Сгенерировать синтетические данные (14 дней)
 python scripts/generate_data.py
+# → data.csv
+
+# Или использовать Azure trace (30 дней):
+# 1. Скачать azure_v2 через datacentertracesdatasets-cli
+# 2. Конвертировать:
+python scripts/prepare_azure_data.py
+# → data.csv (5-min → 1-min интерполяция)
 
 # Обучить модель
-python src/ml/train.py
+python -m src.ml.train
+# → model.pth, scaler.pkl, model_evaluation.png
+
+# Визуализировать данные
+python scripts/visualize_data.py
+# → data_visualization.png
 ```
 
-Модель сохраняется в `model.pth`.
-
-## Локальный запуск
-
-### Запуск приложения
+### Сбор реальных метрик из Prometheus
 
 ```bash
-python src/app/main.py
+# Собрать CPU метрики за N часов
+python scripts/collect_live_data.py --hours 4 --output live_data.csv
 ```
 
-Приложение будет доступно на http://localhost:8000
+### Основные параметры Helm
 
-### Запуск предсказателя
+```yaml
+# values.yaml (ключевые настройки)
 
-```bash
-python src/scaler/predictor.py
+# HPA
+hpa:
+  useCurrentCpu: true          # Добавить cpu_usage_percent как вторую метрику
+  currentCpuThreshold: "40"    # Порог для current CPU
+  metrics:
+    predicted_cpu: "30"        # Целевое значение predicted_cpu
+
+# Predictor (в кластере — отключён, работает на хосте)
+predictor:
+  enabled: false
+
+# Prometheus adapter (external metrics)
+prometheusAdapter:
+  enabled: true
 ```
 
-Предсказатель запускает HTTP сервер на порту 8001 для метрик Prometheus.
-
-## Сборка Docker
-
 ```bash
-# Сборка образа
-docker build -t autoscaler-app:latest .
-
-# Запуск контейнера
-docker run -p 8000:8000 autoscaler-app:latest
+# Пример: только predicted_cpu, без current CPU
+helm upgrade autoscaler ./helm/autoscaler -n autoscaling-ns \
+  --set hpa.useCurrentCpu=false
 ```
 
-## Развертывание в k3s
+## Нагрузочное тестирование
 
-### Предварительные требования
-
-Установите k3s:
 ```bash
-curl -sfL https://get.k3s.io | sh -
+# Классический тест с ramp-up/burst
+python tests/integration/load_test.py --concurrency 10 --burst-concurrency 15
+
+# CSV-driven: воспроизводит паттерн CPU из data.csv
+python tests/integration/load_test_csv.py --csv data.csv --speed 60
+
+# С синхронизацией по времени (time-sync)
+python tests/integration/load_test_csv.py --csv data_scaled.csv --speed 1 --time-sync
 ```
 
-### Шаги развертывания
-
-1. **Создать namespace:**
-   ```bash
-   kubectl apply -f deployment/namespace.yaml
-   ```
-
-2. **Развернуть Prometheus:**
-   ```bash
-   kubectl apply -f deployment/prometheus/
-   ```
-
-3. **Развернуть приложение:**
-   ```bash
-   kubectl apply -f deployment/app-deployment.yaml
-   kubectl apply -f deployment/app-service.yaml
-   ```
-
-4. **Развернуть предсказатель:**
-   ```bash
-   kubectl apply -f deployment/predictor-deployment.yaml
-   ```
-
-5. **Настроить HPA:**
-   ```bash
-   kubectl apply -f deployment/hpa.yaml
-   ```
-
-6. **Применить prometheus-adapter:**
-   ```bash
-   kubectl apply -f deployment/prometheus-adapter.yaml
-   ```
-
-### Проверка развертывания
+## Unit тесты
 
 ```bash
-# Проверить pods
-kubectl get pods -n autoscaling-ns
+export PYTHONPATH=/home/pepe/Repos/AutoScaler
 
-# Проверить services
-kubectl get svc -n autoscaling-ns
-
-# Проверить HPA
-kubectl get hpa -n autoscaling-ns
-```
-
-### Автоматическое развертывание
-
-Используйте скрипт:
-```bash
-./scripts/deploy.sh
-```
-
-## Конфигурация
-
-Основные настройки в `src/scaler/config.py`:
-
-- `PROMETHEUS_URL`: URL Prometheus сервера
-- `CPU_QUERY`: PromQL запрос для CPU метрик
-- `THRESHOLDS`: Пороги для масштабирования (scale_up, scale_down)
-- `INTERVAL`: Интервал сбора метрик
-- `SEQUENCE_LENGTH`: Длина последовательности для предсказания
-- `MODEL_PATH`: Путь к обученной модели
-
-## Тестирование
-
-### Unit тесты
-
-```bash
-# Запуск unit тестов для ML модели
+# Тесты ML модели
 pytest tests/unit/test_model.py -v
+
+# Тесты предсказателя
+pytest src/scaler/test_predictor.py -v
 ```
 
-### Интеграционные тесты
+## Доступ к сервисам
 
-```bash
-# Нагрузочное тестирование с Locust
-# Сначала запустите приложение локально или в k8s
-locust -f tests/integration/load_test.py --host=http://localhost:8000
-# Откройте http://localhost:8089 для управления тестом
-```
-
-### Сравнение proactive vs reactive
-
-| Метрика | Proactive (с ML) | Reactive (стандартный HPA) |
-|---------|------------------|----------------------------|
-| Response Time (средний) | 120ms | 180ms |
-| Resource Usage (CPU средний) | 65% | 80% |
-| Scaling Latency | 30 сек | 60 сек |
-| Over-provisioning | 10% | 25% |
-
-Proactive масштабирование использует предсказания ML для заблаговременного масштабирования, что приводит к лучшей производительности и эффективному использованию ресурсов.
-
-## Интеграция с Prometheus и HPA
-
-### Как работает интеграция
-
-1. **Приложение** экспортирует метрики CPU в Prometheus через `/metrics` endpoint
-2. **Предсказатель**:
-   - Запрашивает исторические метрики из Prometheus
-   - Использует ML модель для предсказания будущей нагрузки
-   - Экспортирует предсказанную метрику `predicted_cpu` в Prometheus
-3. **HPA** использует `predicted_cpu` метрику для принятия решений о масштабировании
-4. **Prometheus Adapter** позволяет HPA использовать custom метрики
-
-### Советы по интеграции
-
-- **Настройка Prometheus**: Убедитесь, что приложение правильно экспортирует метрики. Проверьте `/metrics` endpoint
-- **Обучение модели**: Модель должна быть обучена на релевантных данных. Используйте `scripts/generate_data.py` для генерации данных
-- **Мониторинг предсказателя**: Предсказатель экспортирует свои метрики на порту 8001. Добавьте его в Prometheus targets
-- **HPA thresholds**: Настройте `targetAverageValue` в HPA в соответствии с вашими требованиями к производительности
-- **Scaling policies**: Для production рассмотрите использование stabilization window в HPA для предотвращения thrashing
-- **Resource limits**: Установите resource requests/limits для pods чтобы HPA работал корректно
-
-## Разработка
-
-### Добавление новых функций
-1. Создайте новый модуль в соответствующей директории (`src/app/`, `src/ml/`, `src/scaler/`)
-2. Добавьте тесты в соответствующий тестовый файл
-3. Обновите документацию
-
-### Тестирование
-- Используйте pytest для запуска тестов
-- Добавляйте тесты для новых функций
-- Поддерживайте покрытие кода тестами
+| Сервис | URL | Логин |
+|--------|-----|-------|
+| FastAPI App | http://192.168.31.41:30080 | — |
+| Prometheus | http://192.168.31.41:30909 | — |
+| Grafana | http://192.168.31.41:30300 | admin / admin |
+| Predictor (host) | http://localhost:8001 | — |
 
 ## Лицензия
 
-Смотрите файл LICENSE для деталей.
+Смотрите файл LICENSE.

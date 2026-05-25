@@ -20,7 +20,7 @@ class TestLSTMModel:
         model = LSTMModel()
         x = torch.randn(32, 60, 1)  # batch_size, seq_len, input_size
         output = model(x)
-        assert output.shape == (32, 10)  # output_size
+        assert output.shape == (32, 1)  # output_size = 1 (15-minute ahead prediction)
 
     @patch('pandas.read_csv')
     @patch('torch.save')
@@ -67,10 +67,13 @@ class TestUtils:
     def test_create_sequences(self):
         data = np.arange(100)
         seq_length = 10
-        X, y = create_sequences(data, seq_length)
+        prediction_horizon = 15
+        X, y = create_sequences(data, seq_length, prediction_horizon)
+        expected_samples = len(data) - seq_length - prediction_horizon + 1
         assert X.shape[0] == y.shape[0]
+        assert X.shape[0] == expected_samples
         assert X.shape[1] == seq_length
-        assert y.shape[1] == 10  # output_size
+        assert y.shape[1] == 1  # single value: 15-minute ahead prediction
 
     def test_preprocessing(self):
         data = np.random.rand(100)
@@ -78,3 +81,6 @@ class TestUtils:
         assert scaled.shape == (100, 1)
         assert scaled.min() >= 0
         assert scaled.max() <= 1
+        # Test inverse transform
+        original = scaler.inverse_transform(scaled)
+        assert np.allclose(original.flatten(), data, atol=1e-5)

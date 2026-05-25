@@ -1,0 +1,16 @@
+{{- if .Values.prometheusAdapter.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.prometheusAdapter.name }}-service
+  namespace: {{ include "autoscaler.namespace" . }}
+  labels:
+    {{- include "autoscaler.prometheusAdapter.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "autoscaler.prometheusAdapter.selectorLabels" . | nindent 4 }}
+  ports:
+  - port: {{ .Values.prometheusAdapter.port }}
+    targetPort: {{ .Values.prometheusAdapter.port }}
+    protocol: TCP
+{{- end }}

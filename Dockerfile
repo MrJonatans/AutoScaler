@@ -1,17 +1,16 @@
-# Multi-stage Dockerfile for AutoScaler App
-# Build stage: Install dependencies including heavy ones like torch
+# Multi-stage Dockerfile for AutoScaler App (lightweight)
+# Only web + metrics dependencies — no torch
 FROM python:3.11-slim as builder
 
 WORKDIR /app
 
-# Install system dependencies for torch
+# No heavy system dependencies needed for the app
 RUN apt-get update && apt-get install -y \
-    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy lightweight requirements and install
+COPY requirements-app.txt .
+RUN pip install --no-cache-dir -r requirements-app.txt
 
 # Runtime stage: Lightweight image for running the app
 FROM python:3.11-slim as runtime

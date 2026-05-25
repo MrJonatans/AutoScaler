@@ -1,0 +1,286 @@
+# Default values for autoscaler.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global settings
+global:
+  # Namespace for all resources
+  namespace: autoscaling-ns
+
+# Application (load simulator) settings
+app:
+  name: autoscaler-app
+  replicas: 1
+  image:
+    repository: autoscaler-app
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 8000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    # Use ClusterIP for dev / single-node k3s (avoids svclb host-port conflicts).
+    # Change to LoadBalancer or NodePort only when you have a proper external LB or need host-port exposure.
+    type: NodePort
+    port: 80
+    targetPort: 8000
+    nodePort: 30080
+  # Additional environment variables
+  env: []
+  # Node selector, tolerations, affinity
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Predictor (ML inference service) settings
+predictor:
+  enabled: false   # Set to true to deploy predictor inside the cluster (default: false - run locally on host)
+  name: autoscaler-predictor
+  replicas: 1
+  image:
+    repository: autoscaler-predictor
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 8001
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Predictor configuration (overrides src/scaler/config.py)
+  config:
+    prometheusUrl: "http://prometheus-service:9090"
+    cpuQuery: "cpu_usage_percent"
+    scaleUpThreshold: 70.0
+    scaleDownThreshold: 30.0
+    interval: 300
+    sequenceLength: 60
+    modelPath: "model.pth"
+  # Additional environment variables
+  env: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Prometheus settings
+prometheus:
+  enabled: true
+  name: prometheus
+  replicas: 1
+  image:
+    repository: prom/prometheus
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 9090
+  service:
+    type: NodePort
+    nodePort: 30909
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  # Prometheus configuration
+  config:
+    scrapeInterval: 15s
+    # Scrape targets: app service + external predictor (hybrid mode, default)
+    additionalScrapeConfigs:
+      - job_name: 'external-predictor'
+        static_configs:
+          - targets: ['192.168.31.17:8001']
+        metric_relabel_configs:
+          - source_labels: [job]
+            regex: '(.*)'
+            target_label: pod
+            replacement: 'autoscaler-app'
+          - source_labels: [job]
+            regex: '(.*)'
+            target_label: namespace
+            replacement: 'autoscaling-ns'
+      - job_name: 'node-exporter'
+        static_configs:
+          - targets: ['node-exporter-service:9100']
+      - job_name: 'kube-state-metrics'
+        static_configs:
+          - targets: ['kube-state-metrics-service:8080']
+  # Storage configuration (emptyDir by default, can be configured for PVC)
+  storage:
+    enabled: false
+    size: 10Gi
+    storageClass: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Prometheus Adapter settings (for custom metrics)
+prometheusAdapter:
+  enabled: true
+  name: prometheus-adapter
+  replicas: 1
+  image:
+    repository: k8s.gcr.io/prometheus-adapter/prometheus-adapter
+    tag: v0.10.0
+    pullPolicy: IfNotPresent
+  port: 443
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # Adapter configuration for custom metrics
+  config:
+    # External rules expose metrics as external.metrics.k8s.io
+    externalRules:
+      - seriesQuery: '{__name__=~"predicted_cpu"}'
+        resources:
+          overrides:
+            namespace:
+              resource: namespace
+        name:
+          matches: predicted_cpu
+          as: predicted_cpu
+        metricsQuery: avg(predicted_cpu)
+      - seriesQuery: '{__name__=~"cpu_usage_percent"}'
+        resources:
+          overrides:
+            namespace:
+              resource: namespace
+        name:
+          matches: cpu_usage_percent
+          as: cpu_usage_percent
+        metricsQuery: avg(cpu_usage_percent)
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Horizontal Pod Autoscaler settings
+hpa:
+  enabled: true
+  name: autoscaler-app-hpa
+  minReplicas: 1
+  maxReplicas: 10
+  # Use current CPU metric in addition to predicted_cpu (default: true)
+  useCurrentCpu: true
+  # Threshold for current CPU usage (HPA scales if predicted_cpu > 30 OR current_cpu > this)
+  currentCpuThreshold: "40"
+  # External metric from prometheus-adapter (predicted_cpu from predictor)
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: predicted_cpu
+        target:
+          type: Value
+          value: "30"
+  # Optional: behavior configuration for HPA
+  behavior: {}
+    # scaleDown:
+    #   stabilizationWindowSeconds: 300
+    #   policies:
+    #   - type: Percent
+    #     value: 100
+    #     periodSeconds: 15
+
+# Common labels added to all resources
+commonLabels: {}
+
+# Grafana dashboard settings
+grafana:
+  enabled: true
+  name: grafana
+  replicas: 1
+  image:
+    repository: grafana/grafana
+    tag: 10.4.1
+    pullPolicy: IfNotPresent
+  port: 3000
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: NodePort
+    port: 80
+    targetPort: 3000
+    nodePort: 30300
+  # Admin credentials
+  adminUser: admin
+  adminPassword: admin
+  # Storage configuration
+  storage:
+    enabled: false
+    size: 5Gi
+    storageClass: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Kube State Metrics settings (for Kubernetes object metrics — replicas, deployments, etc.)
+kubeStateMetrics:
+  enabled: true
+  name: kube-state-metrics
+  replicas: 1
+  image:
+    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
+    tag: v2.12.0
+    pullPolicy: IfNotPresent
+  port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Node Exporter settings (for node-level metrics)
+nodeExporter:
+  enabled: true
+  name: node-exporter
+  image:
+    repository: prom/node-exporter
+    tag: latest
+    pullPolicy: IfNotPresent
+  port: 9100
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # Additional collectors to enable (true) or disable (false)
+  # Only collectors that exist by default in node_exporter
+  collectors:
+    cpu: "true"
+    meminfo: "true"
+    loadavg: "true"
+    netdev: "true"
+  nodeSelector: {}
+  tolerations:
+    - operator: Exists
+  affinity: {}
+
+# Image pull secrets for private registries
+imagePullSecrets: []
+
+# RBAC settings (if needed for future enhancements)
+rbac:
+  create: false
